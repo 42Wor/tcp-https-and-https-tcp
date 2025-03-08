@@ -4,103 +4,143 @@ import socket
 import json
 import logging
 
-# Configure logging for the HTTP server (optional, but good practice)
+# Configure logging for the HTTP server
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-HOST = '127.0.0.1'  # The server's hostname or IP address for the TCP server
-PORT1 = 9999        # The port used by the TCP server
-PORT = 8000         # The port for the HTTP server
+HOST = '127.0.0.1'  # TCP server hostname
+PORT1 = 9999        # TCP server port
+PORT = 8000         # HTTP server port
 
 class MyHandler(http.server.BaseHTTPRequestHandler):
 
+    tcp_socket = None  # Class-level variable to store the persistent TCP socket
+
     def do_GET(self):
-        """Handles GET requests. Returns a simple message indicating the service is running."""
-        self.send_response(200)  # HTTP OK status
+        """Handles GET requests."""
+        self.send_response(200)
         self.send_header("Content-type", "application/json")
         self.end_headers()
-        response = {"message": "Simple HTTP service is running (try a POST request to forward data to TCP server)"}
+        response = {"message": "Simple HTTP service is running (try POST requests)"}
         self.wfile.write(json.dumps(response).encode('utf-8'))
         logging.info("GET request served.")
 
     def do_POST(self):
-        """Handles POST requests. Forwards JSON data to a TCP server and returns the TCP server's response."""
+        """Handles POST requests, using a persistent TCP connection."""
         try:
-            # 1. Receive POST data from HTTP client
             content_length = int(self.headers['Content-Length'])
-            post_data = self.rfile.read(content_length)  # Read data from the request body
+            post_data = self.rfile.read(content_length)
 
             try:
-                post_data_json = json.loads(post_data.decode('utf-8'))  # Parse JSON data
+                post_data_json = json.loads(post_data.decode('utf-8'))
                 logging.info(f"Received POST data from HTTP client: {post_data_json}")
             except json.JSONDecodeError as e:
-                self.send_response(400)  # HTTP 400 Bad Request
+                self.send_error_response(400, {"error": f"Invalid JSON data from HTTP client: {e}"})
+                logging.error(f"Invalid JSON data from HTTP client: {e}")
+                return
+
+            try:
+                # 1. Ensure persistent TCP connection
+                if MyHandler.tcp_socket is None:  # Check class-level socket
+                    MyHandler.tcp_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM) # Create socket only once
+                    MyHandler.tcp_socket.connect((HOST, PORT1)) # Connect once
+                    logging.info(f"Established persistent connection to TCP server at {HOST}:{PORT1}")
+
+                    # Send login data on initial connection (assuming first POST is login)
+                    login_data = {"username": "testuser", "password": "testpassword", "databaseName": "mydatabase"} # Hardcoded login for simplicity - adjust as needed
+                    logging.info(f"Sending login data to TCP server: {login_data}")
+                    MyHandler.tcp_socket.sendall((json.dumps(login_data) + '\n').encode('utf-8'))
+
+                    # Receive and check login response (important to confirm login success)
+                    login_response_data = MyHandler.tcp_socket.recv(1024)
+                    if not login_response_data:
+                        raise socket.error("No login response from TCP server")
+                    login_response_json = json.loads(login_response_data.decode('utf-8'))
+                    logging.info(f"Received login response from TCP server: {login_response_json}")
+                    if 'error' in login_response_json: # Check for error in login response
+                        self.send_error_response(500, {"error": f"TCP Login Error: {login_response_json['error']}"})
+                        return # Stop processing if login failed
+                    else:
+                         logging.info(f"TCP Login successful: {login_response_json.get('message') or login_response_json}")
+
+
+                # 2. Forward POST data (query) to the persistent TCP connection
+                logging.info(f"Forwarding data to TCP server (using persistent connection): {post_data_json}")
+                MyHandler.tcp_socket.sendall((json.dumps(post_data_json) + '\n').encode('utf-8')) # Send query
+
+                # 3. Receive response from TCP server
+                data = MyHandler.tcp_socket.recv(1024)
+                if not data:
+                    logging.warning("No data received from TCP server.")
+                    response_data_json = {"warning": "No response from TCP server"}
+                else:
+                    response_data = data.decode('utf-8')
+                    try:
+                        response_data_json = json.loads(response_data)
+                        logging.info(f"Received response from TCP server: {response_data_json}")
+                    except json.JSONDecodeError as e:
+                        response_data_json = {"error": f"Invalid JSON response from TCP server: {e}", "raw_response": response_data}
+                        logging.error(f"Invalid JSON response from TCP server: {e}, raw response: {response_data}")
+
+                # 4. Send HTTP response back to client
+                self.send_response(200)
                 self.send_header("Content-type", "application/json")
                 self.end_headers()
-                error_message = {"error": f"Invalid JSON data received from HTTP client: {e}"}
-                self.wfile.write(json.dumps(error_message).encode('utf-8'))
-                logging.error(f"Invalid JSON data from HTTP client: {e}")
-                return  # Exit the handler if JSON is invalid
+                self.wfile.write(json.dumps(response_data_json).encode('utf-8'))
+                logging.info("HTTP response sent to client.")
 
-            # 2. Create a TCP socket and connect to the TCP server
-            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as tcp_socket:
-                try:
-                    tcp_socket.connect((HOST, PORT1))
-                    logging.info(f"Successfully connected to TCP server at {HOST}:{PORT1}")
 
-                    # 3. Forward the POST data to the TCP server
-                    logging.info(f"Forwarding data to TCP server: {post_data_json}")
-                    tcp_socket.sendall(json.dumps(post_data_json).encode('utf-8'))
+            except socket.error as tcp_e:
+                # Handle TCP socket errors, reset persistent connection
+                logging.error(f"TCP Error: {tcp_e}", exc_info=True)
+                self.send_error_response(500, {"error": f"Error communicating with TCP server: {tcp_e}"})
+                MyHandler.tcp_socket = None # Reset persistent connection on error
 
-                    # 4. Receive response from the TCP server
-                    data = tcp_socket.recv(1024)  # Receive up to 1024 bytes from TCP server
-                    if not data:
-                        logging.warning("No data received from TCP server.")
-                        response_data_json = {"warning": "No response from TCP server"} # Handle empty TCP response
-                    else:
-                        response_data = data.decode('utf-8')
-                        try:
-                            response_data_json = json.loads(response_data)
-                            logging.info(f"Received response from TCP server: {response_data_json}")
-                        except json.JSONDecodeError as e:
-                            response_data_json = {"error": f"Invalid JSON response from TCP server: {e}", "raw_response": response_data}
-                            logging.error(f"Invalid JSON response from TCP server: {e}, raw response: {response_data}")
-
-                    # 5. Send HTTP 200 OK response with data from TCP server
-                    self.send_response(200)
-                    self.send_header("Content-type", "application/json")
-                    self.end_headers()
-                    self.wfile.write(json.dumps(response_data_json).encode('utf-8'))
-                    logging.info("HTTP response sent to client with data from TCP server.")
-
-                except socket.error as tcp_e:
-                    # Handle TCP connection or communication errors
-                    self.send_response(500)  # HTTP 500 Internal Server Error
-                    self.send_header("Content-type", "application/json")
-                    self.end_headers()
-                    error_message = {"error": f"Error communicating with TCP server: {tcp_e}"}
-                    self.wfile.write(json.dumps(error_message).encode('utf-8'))
-                    logging.error(f"TCP Communication Error: {tcp_e}")
 
         except Exception as http_e:
-            # Handle any other exceptions during HTTP request processing
-            self.send_response(500)  # HTTP 500 Internal Server Error
-            self.send_header("Content-type", "application/json")
-            self.end_headers()
-            error_message = {"error": f"HTTP Server Error: {http_e}"}
-            self.wfile.write(json.dumps(error_message).encode('utf-8'))
-            logging.error(f"HTTP Server Error: {http_e}", exc_info=True) # Log with traceback for debugging
+            # Handle HTTP server errors
+            logging.error(f"HTTP Server Error: {http_e}", exc_info=True)
+            self.send_error_response(500, {"error": f"HTTP Server Error: {http_e}"})
+
+
+    def send_error_response(self, status_code, error_message):
+        self.send_response(status_code)
+        self.send_header("Content-type", "application/json")
+        self.end_headers()
+        self.wfile.write(json.dumps(error_message).encode('utf-8'))
+        logging.error(f"HTTP Error Response sent: {error_message}")
+
+    @classmethod
+    def close_tcp_connection(cls):
+        """Class method to close the persistent TCP connection when HTTP server stops."""
+        if cls.tcp_socket:
+            cls.tcp_socket.close()
+            logging.info("Persistent TCP connection closed.")
+            cls.tcp_socket = None
+
+
+def serve_forever_with_shutdown(server_address, handler_class):
+    """Sets up signal handlers for graceful shutdown and serves forever."""
+    with socketserver.TCPServer(server_address, handler_class) as httpd:
+        import signal
+        def signal_handler(signum, frame):
+            logging.info("Shutting down HTTP server...")
+            handler_class.close_tcp_connection() # Close TCP connection on shutdown
+            httpd.shutdown() # Initiate server shutdown
+        signal.signal(signal.SIGINT, signal_handler) # Handle Ctrl+C
+        signal.signal(signal.SIGTERM, signal_handler) # Handle termination signal
+
+        logging.info(f"Serving dynamic HTTP content, forwarding to TCP server at port {PORT1}, on HTTP port {PORT}")
+        httpd.serve_forever()
 
 
 if __name__ == "__main__":
     try:
-        with socketserver.TCPServer(("", PORT), MyHandler) as httpd:
-            logging.info(f"Serving dynamic HTTP content, forwarding to TCP server at port {PORT1}, on HTTP port {PORT}")
-            httpd.serve_forever()
+        serve_forever_with_shutdown(("", PORT), MyHandler) # Use modified serve_forever
     except OSError as e:
-        if e.errno == 98:  # errno 98 is for "Address already in use" (EADDRINUSE)
+        if e.errno == 98:
             logging.error(f"Port {PORT} is already in use. Please use a different port.")
         else:
-            logging.error("Error starting HTTP server:", exc_info=True) # Log other OS errors with traceback
-            raise # Re-raise other OS errors
+            logging.error("Error starting HTTP server:", exc_info=True)
+            raise
     except Exception as e:
-        logging.error("Unexpected error:", exc_info=True) # Catch any other top-level exceptions
+        logging.error("Unexpected error:", exc_info=True)
