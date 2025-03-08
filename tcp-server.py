@@ -37,30 +37,34 @@ def handle_client(conn, addr):
         conn.close() # Ensure connection is always closed
         print(f"Connection with {addr} closed.")
 
-
-with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-    try:
-        s.bind((HOST, PORT))
-    except socket.error as e:
-        print(f"Error binding socket: {e}")
-        exit(1) # Exit if binding fails, server cannot start
-
-    s.listen()
-    print(f"Listening on {HOST}:{PORT}...")
-
-    while True: # Keep accepting new connections in a loop
+def start_server(host, port):
+    """Starts the TCP server."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         try:
-            conn, addr = s.accept() # Accept incoming connection
-            handle_client(conn, addr) # Call function to handle client communication
-        except KeyboardInterrupt: # Allow graceful shutdown with Ctrl+C
-            print("Server shutting down...")
-            break # Exit the main loop and server will close
+            s.bind((host, port))
         except socket.error as e:
-            print(f"Socket accept error: {e}") # Handle accept errors, but keep server running
-            continue # Go back to listening for new connections
-        except Exception as e: # Catch any other errors during accept loop
-            print(f"Unexpected error during accept: {e}")
-            traceback.print_exc() # Print full traceback for debugging
-            continue # Try to continue accepting new connections
+            print(f"Error binding socket: {e}")
+            exit(1) # Exit if binding fails, server cannot start
 
-print("Server stopped.")
+        s.listen()
+        print(f"Listening on {host}:{port}...")
+
+        while True: # Keep accepting new connections in a loop
+            try:
+                conn, addr = s.accept() # Accept incoming connection
+                handle_client(conn, addr) # Call function to handle client communication
+            except KeyboardInterrupt: # Allow graceful shutdown with Ctrl+C
+                print("Server shutting down...")
+                break # Exit the main loop and server will close
+            except socket.error as e:
+                print(f"Socket accept error: {e}") # Handle accept errors, but keep server running
+                continue # Go back to listening for new connections
+            except Exception as e: # Catch any other errors during accept loop
+                print(f"Unexpected error during accept: {e}")
+                traceback.print_exc() # Print full traceback for debugging
+                continue # Try to continue accepting new connections
+
+    print("Server stopped.")
+
+if __name__ == "__main__":
+    start_server(HOST, PORT)
