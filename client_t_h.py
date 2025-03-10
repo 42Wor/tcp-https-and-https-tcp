@@ -2,8 +2,8 @@ import requests
 import json
 import time
 
-#HTTP_SERVER_URL = 'http://127.0.0.1:8000'   Or your server's hostname/IP
-HTTP_SERVER_URL = 'https://4d79-119-156-228-230.ngrok-free.app'
+HTTP_SERVER_URL = 'http://127.0.0.1:8000'  # Or your server's hostname/IP
+#HTTP_SERVER_URL = 'https://4d79-119-156-228-230.ngrok-free.app'
 
 def send_data_to_http_server(data):
     """Sends JSON data to the HTTP server via a POST request and prints the response."""
